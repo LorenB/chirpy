@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"sync/atomic"
 )
 
 type RootHanlder struct{}
@@ -22,7 +23,7 @@ func (h *RootHanlder) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Remove leading slash to make it relative to current directory
 	filepath = filepath[1:] // Remove the leading "/"
 
-	fmt.Printf("Serving file: %v\n", filepath)
+	fmt.Printf("Handling %v Serving file: %v\n", r.URL.Path, filepath)
 	http.ServeFile(w, r, filepath)
 }
 
@@ -32,6 +33,39 @@ func (h *HealthHanlder) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(200)
 	w.Write([]byte(`OK`))
+}
+
+type MetricsHanlder struct {
+	hits *atomic.Int32
+}
+
+func (h *MetricsHanlder) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.WriteHeader(200)
+	fmt.Fprintf(w, "Hits: %d", h.hits.Load())
+}
+
+type ResetHanlder struct {
+	hits *atomic.Int32
+}
+
+func (h *ResetHanlder) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	h.hits.Store(0)
+	w.WriteHeader(200)
+	w.Write([]byte(`OK`))
+}
+
+type apiConfig struct {
+	fileserverHits atomic.Int32
+}
+
+func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		cfg.fileserverHits.Add(1)
+		fmt.Printf("Hits: %d\n", cfg.fileserverHits.Load())
+		next.ServeHTTP(w, r)
+	})
 }
 
 func main() {
@@ -45,8 +79,23 @@ func main() {
 
 	// fileServer := http.FileServer(http.Dir("."))
 	// mux.Handle("/app/", http.StripPrefix("/app", fileServer))
-	mux.Handle("/app/", http.StripPrefix("/app", &RootHanlder{}))
+
+	apiCfg := &apiConfig{}
+	wrappedHandler := apiCfg.middlewareMetricsInc(&RootHanlder{})
+	mux.Handle("/app/", http.StripPrefix("/app", wrappedHandler))
+
+	// mux.Handle("/app/", http.StripPrefix("/app", &RootHanlder{}))
+
 	mux.Handle("/healthz", &HealthHanlder{})
+
+	metricsHndl := &MetricsHanlder{}
+	metricsHndl.hits = &apiCfg.fileserverHits
+	mux.Handle("/metrics", metricsHndl)
+
+	resetHndl := &ResetHanlder{}
+	resetHndl.hits = &apiCfg.fileserverHits
+	mux.Handle("/reset", resetHndl)
+
 	log.Println("Starting server on :8080")
 	log.Fatal(srv.ListenAndServe())
 }
