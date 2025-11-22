@@ -86,15 +86,15 @@ func main() {
 
 	// mux.Handle("/app/", http.StripPrefix("/app", &RootHanlder{}))
 
-	mux.Handle("/healthz", &HealthHanlder{})
+	mux.Handle("GET /api/healthz", &HealthHanlder{})
 
 	metricsHndl := &MetricsHanlder{}
 	metricsHndl.hits = &apiCfg.fileserverHits
-	mux.Handle("/metrics", metricsHndl)
+	mux.Handle("GET /api/metrics", metricsHndl)
 
 	resetHndl := &ResetHanlder{}
 	resetHndl.hits = &apiCfg.fileserverHits
-	mux.Handle("/reset", resetHndl)
+	mux.Handle("POST /api/reset", resetHndl)
 
 	log.Println("Starting server on :8080")
 	log.Fatal(srv.ListenAndServe())
