@@ -1,7 +1,6 @@
 package main
 
 import (
-	// "encoding/json"
 	"fmt"
 	"log"
 	"net/http"
@@ -54,15 +53,8 @@ func (h *MetricsHanlder) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	`
 	t := fmt.Sprintf(tmpl, hits)
 
-	// fmt.Fprintf(w, t)
 	fmt.Fprintln(w, t)
 }
-
-// func (h *MetricsHanlder) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-// 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-// 	w.WriteHeader(200)
-// 	fmt.Fprintf(w, "Hits: %d", h.hits.Load())
-// }
 
 type ResetHanlder struct {
 	hits *atomic.Int32
@@ -96,14 +88,9 @@ func main() {
 		Handler: mux,
 	}
 
-	// fileServer := http.FileServer(http.Dir("."))
-	// mux.Handle("/app/", http.StripPrefix("/app", fileServer))
-
 	apiCfg := &apiConfig{}
 	wrappedHandler := apiCfg.middlewareMetricsInc(&RootHanlder{})
 	mux.Handle("/app/", http.StripPrefix("/app", wrappedHandler))
-
-	// mux.Handle("/app/", http.StripPrefix("/app", &RootHanlder{}))
 
 	mux.Handle("GET /api/healthz", &HealthHanlder{})
 
