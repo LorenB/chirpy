@@ -107,7 +107,7 @@ func main() {
 
 	mux.Handle("GET /api/healthz", &HealthHanlder{})
 
-	mux.Handle("POST /api/validate_chirp", &ValidateChirpHandler{})
+	mux.HandleFunc("POST /api/validate_chirp", handlerChirpsValidate)
 
 	metricsHndl := &MetricsHanlder{}
 	metricsHndl.hits = &apiCfg.fileserverHits

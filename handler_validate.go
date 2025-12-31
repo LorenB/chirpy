@@ -6,9 +6,7 @@ import (
 	"net/http"
 )
 
-type ValidateChirpHandler struct{}
-
-func (h *ValidateChirpHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+func handlerChirpsValidate(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	type parameters struct {
 		Body string `json:"body"`
