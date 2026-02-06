@@ -1,10 +1,19 @@
 package main
 
 import (
+	"chirpy/internal/databse"
+	"database/sql"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"sync/atomic"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/joho/godotenv"
+	_ "github.com/lib/pq"
 )
 
 type RootHanlder struct{}
@@ -33,6 +42,49 @@ func (h *HealthHanlder) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(200)
 	w.Write([]byte(`OK`))
+}
+
+type CreateUserHandler struct {
+	queries *databse.Queries
+}
+
+type User struct {
+	ID        uuid.UUID `json:"id"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+	Email     string    `json:"email"`
+}
+
+func (h *CreateUserHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	type parameters struct {
+		Email string `json:"email"`
+	}
+	w.Header().Set("Content-Type", "application/json")
+	decoder := json.NewDecoder(r.Body)
+	params := parameters{}
+	err := decoder.Decode(&params)
+	if err != nil {
+		log.Printf("Error decoding parameters: %s", err)
+		w.WriteHeader(500)
+		return
+	}
+
+	// userHanlder, err := h.queries.CreateUser(r.Context(), params.Email)
+
+	dbUser, err := h.queries.CreateUser(r.Context(), params.Email)
+	user := User{
+		ID:        dbUser.ID,
+		CreatedAt: dbUser.CreatedAt,
+		UpdatedAt: dbUser.UpdatedAt,
+		Email:     dbUser.Email,
+	}
+	w.WriteHeader(http.StatusCreated)
+	if err := json.NewEncoder(w).Encode(user); err != nil {
+		log.Panicf("Error encoding parameters: %s", err)
+		w.WriteHeader(500)
+		return
+	}
+
 }
 
 type MetricsHanlder struct {
@@ -69,30 +121,41 @@ func (h *ResetHanlder) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 type apiConfig struct {
 	fileserverHits atomic.Int32
+	queries        *databse.Queries
 }
 
-func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
+func (cfg *apiConfig) middlewareMetricsInc(next http.Handler, queries *databse.Queries) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		cfg.fileserverHits.Add(1)
 		fmt.Printf("Hits: %d\n", cfg.fileserverHits.Load())
+		cfg.queries = queries
 		next.ServeHTTP(w, r)
 	})
 }
 
 func main() {
 	const port = "8080"
-	mux := http.NewServeMux()
 
+	godotenv.Load()
+	dbURl := os.Getenv("DB_URL")
+	db, err := sql.Open("postgres", dbURl)
+	if err != nil {
+		log.Fatal("error connecting to database")
+	}
+	dbQueries := databse.New(db)
+
+	mux := http.NewServeMux()
 	srv := &http.Server{
 		Addr:    ":" + port,
 		Handler: mux,
 	}
 
 	apiCfg := &apiConfig{}
-	wrappedHandler := apiCfg.middlewareMetricsInc(&RootHanlder{})
+	wrappedHandler := apiCfg.middlewareMetricsInc(&RootHanlder{}, dbQueries)
 	mux.Handle("/app/", http.StripPrefix("/app", wrappedHandler))
 
 	mux.Handle("GET /api/healthz", &HealthHanlder{})
+	// mux.Handle("POST /api/users", &CreateUserHandler{})
 
 	mux.HandleFunc("POST /api/validate_chirp", handlerChirpsValidate)
 
