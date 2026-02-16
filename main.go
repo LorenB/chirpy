@@ -1,7 +1,7 @@
 package main
 
 import (
-	"chirpy/internal/databse"
+	"chirpy/internal/database"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -44,8 +44,117 @@ func (h *HealthHanlder) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(`OK`))
 }
 
+type Chirp struct {
+	ID        uuid.UUID `json:"id"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+	Body      string    `json:"body"`
+	UserID    uuid.UUID `json:"user_id"`
+}
+
+func (cfg *apiConfig) handlerGetChirps(w http.ResponseWriter, r *http.Request) {
+	dbChirps, err := cfg.db.GetChirps(r.Context())
+	if err != nil {
+		log.Printf("error writing to database: %s", err)
+		w.WriteHeader(500)
+		return
+	}
+	var chirps []Chirp
+	for _, dbChirp := range dbChirps {
+		chirps = append(
+			chirps,
+			Chirp{
+				UserID:    dbChirp.UserID,
+				Body:      dbChirp.Body,
+				CreatedAt: dbChirp.CreatedAt,
+				UpdatedAt: dbChirp.CreatedAt,
+			},
+		)
+	}
+	w.WriteHeader(http.StatusOK)
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(&chirps); err != nil {
+		log.Panicf("Error encoding parameters: %s", err)
+		w.WriteHeader(500)
+		return
+	}
+}
+
+func (cfg *apiConfig) handlerGetChirp(w http.ResponseWriter, r *http.Request) {
+	chirpIDStr := r.PathValue("chirpID")
+	// conver to UUID
+	chirpID, err := uuid.Parse(chirpIDStr)
+	if err != nil {
+		log.Panicf("Error parsing ID: %s", chirpIDStr)
+		w.WriteHeader(500)
+		return
+	}
+	dbChirp, err := cfg.db.GetChirp(r.Context(), chirpID)
+	if err != nil {
+		respondWithError(w, 404, "Chirp not found", err)
+		return
+	}
+
+	chirp := Chirp{
+		ID:        dbChirp.ID,
+		UserID:    dbChirp.UserID,
+		Body:      dbChirp.Body,
+		CreatedAt: dbChirp.CreatedAt,
+		UpdatedAt: dbChirp.CreatedAt,
+	}
+
+	w.WriteHeader(http.StatusOK)
+	if err := json.NewEncoder(w).Encode(chirp); err != nil {
+		log.Panicf("Error encoding parameters: %s", err)
+		w.WriteHeader(500)
+		return
+	}
+
+}
+
+func (cfg *apiConfig) handlerChirpCreate(w http.ResponseWriter, r *http.Request) {
+	type parameters struct {
+		Body   string    `json:"body"`
+		UserID uuid.UUID `json:"user_id"`
+	}
+
+	decoder := json.NewDecoder(r.Body)
+	params := parameters{}
+	err := decoder.Decode(&params)
+	if err != nil {
+		log.Printf("error decoding parameters: %s\n", err)
+		w.WriteHeader(500)
+		return
+	}
+	chripParams := database.CreateChirpParams{
+		UserID: params.UserID,
+		Body:   params.Body,
+	}
+
+	dbChirp, err := cfg.db.CreateChirp(r.Context(), chripParams)
+	if err != nil {
+		log.Printf("error writing to database: %s", err)
+		w.WriteHeader(500)
+		return
+	}
+	chirp := Chirp{
+		ID:        dbChirp.ID,
+		UserID:    dbChirp.UserID,
+		Body:      dbChirp.Body,
+		CreatedAt: dbChirp.CreatedAt,
+		UpdatedAt: dbChirp.CreatedAt,
+	}
+	w.WriteHeader(http.StatusCreated)
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(&chirp); err != nil {
+		log.Panicf("Error encoding parameters: %s", err)
+		w.WriteHeader(500)
+		return
+	}
+}
+
 type CreateUserHandler struct {
-	queries *databse.Queries
+	queries *database.Queries
 }
 
 type User struct {
@@ -55,14 +164,18 @@ type User struct {
 	Email     string    `json:"email"`
 }
 
-func (h *CreateUserHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+func (cfg *apiConfig) handlerUserCreate(w http.ResponseWriter, r *http.Request) {
+	log.Printf("Handling POST api/users")
 	type parameters struct {
 		Email string `json:"email"`
 	}
-	w.Header().Set("Content-Type", "application/json")
+	log.Printf("preparing to decode json...\n")
 	decoder := json.NewDecoder(r.Body)
+	log.Printf("created decoder\n")
 	params := parameters{}
+	log.Printf("decoding json...\n")
 	err := decoder.Decode(&params)
+
 	if err != nil {
 		log.Printf("Error decoding parameters: %s", err)
 		w.WriteHeader(500)
@@ -70,21 +183,31 @@ func (h *CreateUserHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// userHanlder, err := h.queries.CreateUser(r.Context(), params.Email)
-
-	dbUser, err := h.queries.CreateUser(r.Context(), params.Email)
+	log.Printf("Getting user")
+	log.Printf("Getting user - email: %v", params.Email)
+	// dbUser, err := h.queries.CreateUser(r.Context())
+	dbUser, err := cfg.db.CreateUser(r.Context(), params.Email)
+	if err != nil {
+		log.Printf("error while getting user from db: %s", err)
+	}
+	log.Printf("local user struct")
 	user := User{
 		ID:        dbUser.ID,
 		CreatedAt: dbUser.CreatedAt,
 		UpdatedAt: dbUser.UpdatedAt,
 		Email:     dbUser.Email,
 	}
+
+	log.Printf("User after DB write:")
+	fmt.Printf("%+v\n", user)
 	w.WriteHeader(http.StatusCreated)
+	log.Printf("Writing content type...")
+	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(user); err != nil {
 		log.Panicf("Error encoding parameters: %s", err)
 		w.WriteHeader(500)
 		return
 	}
-
 }
 
 type MetricsHanlder struct {
@@ -121,14 +244,13 @@ func (h *ResetHanlder) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 type apiConfig struct {
 	fileserverHits atomic.Int32
-	queries        *databse.Queries
+	db             *database.Queries
 }
 
-func (cfg *apiConfig) middlewareMetricsInc(next http.Handler, queries *databse.Queries) http.Handler {
+func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		cfg.fileserverHits.Add(1)
 		fmt.Printf("Hits: %d\n", cfg.fileserverHits.Load())
-		cfg.queries = queries
 		next.ServeHTTP(w, r)
 	})
 }
@@ -142,7 +264,7 @@ func main() {
 	if err != nil {
 		log.Fatal("error connecting to database")
 	}
-	dbQueries := databse.New(db)
+	dbQueries := database.New(db)
 
 	mux := http.NewServeMux()
 	srv := &http.Server{
@@ -151,13 +273,18 @@ func main() {
 	}
 
 	apiCfg := &apiConfig{}
-	wrappedHandler := apiCfg.middlewareMetricsInc(&RootHanlder{}, dbQueries)
+	apiCfg.db = dbQueries
+	wrappedHandler := apiCfg.middlewareMetricsInc(&RootHanlder{})
 	mux.Handle("/app/", http.StripPrefix("/app", wrappedHandler))
 
 	mux.Handle("GET /api/healthz", &HealthHanlder{})
 	// mux.Handle("POST /api/users", &CreateUserHandler{})
 
 	mux.HandleFunc("POST /api/validate_chirp", handlerChirpsValidate)
+	mux.HandleFunc("POST /api/users", apiCfg.handlerUserCreate)
+	mux.HandleFunc("GET /api/chirps", apiCfg.handlerGetChirps)
+	mux.HandleFunc("GET /api/chirps/{chirpID}", apiCfg.handlerGetChirp)
+	mux.HandleFunc("POST /api/chirps", apiCfg.handlerChirpCreate)
 
 	metricsHndl := &MetricsHanlder{}
 	metricsHndl.hits = &apiCfg.fileserverHits

@@ -3,7 +3,7 @@
 //   sqlc v1.30.0
 // source: users.sql
 
-package databse
+package database
 
 import (
 	"context"
