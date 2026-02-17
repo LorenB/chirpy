@@ -1,6 +1,7 @@
 package main
 
 import (
+	"chirpy/internal/auth"
 	"chirpy/internal/database"
 	"database/sql"
 	"encoding/json"
@@ -153,6 +154,62 @@ func (cfg *apiConfig) handlerChirpCreate(w http.ResponseWriter, r *http.Request)
 	}
 }
 
+type UserCredential struct {
+	Password string `json:"password"`
+	Email    string `json:"email"`
+}
+
+func (cfg *apiConfig) handlerUserLogin(w http.ResponseWriter, r *http.Request) {
+	type parameters struct {
+		Email    string `json:"email"`
+		Password string `json:"password"`
+	}
+
+	log.Printf("preparing to decode json...\n")
+	decoder := json.NewDecoder(r.Body)
+	log.Printf("created decoder\n")
+	params := parameters{}
+	log.Printf("decoding json...\n")
+	err := decoder.Decode(&params)
+
+	if err != nil {
+		log.Printf("Error decoding parameters: %s", err)
+		w.WriteHeader(500)
+		return
+	}
+	dbUser, err := cfg.db.GetUserForEmail(r.Context(), params.Email)
+	if err != nil {
+		log.Printf("No user forund for that email")
+	}
+
+	match, err := auth.CheckPasswordHash(params.Password, dbUser.HashedPassword)
+	if err != nil {
+		log.Println("Failed login")
+		w.WriteHeader(http.StatusUnauthorized)
+	}
+	user := User{
+		ID:        dbUser.ID,
+		CreatedAt: dbUser.CreatedAt,
+		UpdatedAt: dbUser.UpdatedAt,
+		Email:     dbUser.Email,
+	}
+
+	log.Printf("User after DB write:")
+	fmt.Printf("%+v\n", user)
+	if match {
+		w.WriteHeader(http.StatusOK)
+		log.Printf("Writing content type...")
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(user); err != nil {
+			log.Panicf("Error encoding parameters: %s", err)
+			w.WriteHeader(500)
+			return
+		}
+	} else {
+		w.WriteHeader(http.StatusUnauthorized)
+	}
+}
+
 type CreateUserHandler struct {
 	queries *database.Queries
 }
@@ -167,8 +224,10 @@ type User struct {
 func (cfg *apiConfig) handlerUserCreate(w http.ResponseWriter, r *http.Request) {
 	log.Printf("Handling POST api/users")
 	type parameters struct {
-		Email string `json:"email"`
+		Email    string `json:"email"`
+		Password string `json:"password"`
 	}
+
 	log.Printf("preparing to decode json...\n")
 	decoder := json.NewDecoder(r.Body)
 	log.Printf("created decoder\n")
@@ -185,8 +244,18 @@ func (cfg *apiConfig) handlerUserCreate(w http.ResponseWriter, r *http.Request) 
 	// userHanlder, err := h.queries.CreateUser(r.Context(), params.Email)
 	log.Printf("Getting user")
 	log.Printf("Getting user - email: %v", params.Email)
+	hashedPassword, err := auth.HashPassword(params.Password)
+	if err != nil {
+		log.Printf("error hashing password")
+	}
+
+	userParams := database.CreateUserParams{
+		Email:          params.Email,
+		HashedPassword: hashedPassword,
+	}
+
 	// dbUser, err := h.queries.CreateUser(r.Context())
-	dbUser, err := cfg.db.CreateUser(r.Context(), params.Email)
+	dbUser, err := cfg.db.CreateUser(r.Context(), userParams)
 	if err != nil {
 		log.Printf("error while getting user from db: %s", err)
 	}
@@ -282,6 +351,7 @@ func main() {
 
 	mux.HandleFunc("POST /api/validate_chirp", handlerChirpsValidate)
 	mux.HandleFunc("POST /api/users", apiCfg.handlerUserCreate)
+	mux.HandleFunc("POST /api/login", apiCfg.handlerUserLogin)
 	mux.HandleFunc("GET /api/chirps", apiCfg.handlerGetChirps)
 	mux.HandleFunc("GET /api/chirps/{chirpID}", apiCfg.handlerGetChirp)
 	mux.HandleFunc("POST /api/chirps", apiCfg.handlerChirpCreate)
