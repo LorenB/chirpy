@@ -118,17 +118,30 @@ func (cfg *apiConfig) handlerChirpCreate(w http.ResponseWriter, r *http.Request)
 		Body   string    `json:"body"`
 		UserID uuid.UUID `json:"user_id"`
 	}
+	token, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		log.Printf("invalid request - no token")
+		w.WriteHeader(401)
+		return
+	}
+	id, err := auth.ValidateJWT(token, os.Getenv("TOKEN_SECRET"))
+	if err != nil {
+		log.Printf("Invalid token")
+		w.WriteHeader(401)
+		return
+	}
 
 	decoder := json.NewDecoder(r.Body)
 	params := parameters{}
-	err := decoder.Decode(&params)
+	err = decoder.Decode(&params)
 	if err != nil {
 		log.Printf("error decoding parameters: %s\n", err)
 		w.WriteHeader(500)
 		return
 	}
+
 	chripParams := database.CreateChirpParams{
-		UserID: params.UserID,
+		UserID: id,
 		Body:   params.Body,
 	}
 
@@ -161,8 +174,9 @@ type UserCredential struct {
 
 func (cfg *apiConfig) handlerUserLogin(w http.ResponseWriter, r *http.Request) {
 	type parameters struct {
-		Email    string `json:"email"`
-		Password string `json:"password"`
+		Email            string `json:"email"`
+		Password         string `json:"password"`
+		ExpiresInSeconds *int   `json:"expires_in_seconds"`
 	}
 
 	log.Printf("preparing to decode json...\n")
@@ -171,12 +185,21 @@ func (cfg *apiConfig) handlerUserLogin(w http.ResponseWriter, r *http.Request) {
 	params := parameters{}
 	log.Printf("decoding json...\n")
 	err := decoder.Decode(&params)
+	log.Printf("Params decoded")
 
 	if err != nil {
 		log.Printf("Error decoding parameters: %s", err)
 		w.WriteHeader(500)
 		return
 	}
+	expiresIn := time.Hour
+	log.Printf("Checking ExpiresInSeconds")
+	if params.ExpiresInSeconds != nil {
+		log.Printf("ExpiresInSeconds is not nil")
+		expiresIn = time.Duration(*params.ExpiresInSeconds) * time.Second
+		log.Printf("ExpiresInSeconds set explicitly")
+	}
+
 	dbUser, err := cfg.db.GetUserForEmail(r.Context(), params.Email)
 	if err != nil {
 		log.Printf("No user forund for that email")
@@ -187,11 +210,18 @@ func (cfg *apiConfig) handlerUserLogin(w http.ResponseWriter, r *http.Request) {
 		log.Println("Failed login")
 		w.WriteHeader(http.StatusUnauthorized)
 	}
-	user := User{
+	token, err := auth.MakeJWT(dbUser.ID, os.Getenv("TOKEN_SECRET"), expiresIn)
+	if err != nil {
+		log.Print("failed to generate token")
+		w.WriteHeader(500)
+		return
+	}
+	user := UserResponse{
 		ID:        dbUser.ID,
 		CreatedAt: dbUser.CreatedAt,
 		UpdatedAt: dbUser.UpdatedAt,
 		Email:     dbUser.Email,
+		Token:     token,
 	}
 
 	log.Printf("User after DB write:")
@@ -214,11 +244,12 @@ type CreateUserHandler struct {
 	queries *database.Queries
 }
 
-type User struct {
+type UserResponse struct {
 	ID        uuid.UUID `json:"id"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 	Email     string    `json:"email"`
+	Token     string    `json:"token"`
 }
 
 func (cfg *apiConfig) handlerUserCreate(w http.ResponseWriter, r *http.Request) {
@@ -260,7 +291,7 @@ func (cfg *apiConfig) handlerUserCreate(w http.ResponseWriter, r *http.Request) 
 		log.Printf("error while getting user from db: %s", err)
 	}
 	log.Printf("local user struct")
-	user := User{
+	user := UserResponse{
 		ID:        dbUser.ID,
 		CreatedAt: dbUser.CreatedAt,
 		UpdatedAt: dbUser.UpdatedAt,
