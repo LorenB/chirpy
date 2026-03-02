@@ -210,18 +210,34 @@ func (cfg *apiConfig) handlerUserLogin(w http.ResponseWriter, r *http.Request) {
 		log.Println("Failed login")
 		w.WriteHeader(http.StatusUnauthorized)
 	}
+	// generate acces token
 	token, err := auth.MakeJWT(dbUser.ID, os.Getenv("TOKEN_SECRET"), expiresIn)
 	if err != nil {
 		log.Print("failed to generate token")
 		w.WriteHeader(500)
 		return
 	}
+
+	// generate refresh token
+	refreshToken := auth.MakeRefreshToken()
+	log.Printf("refreshToken: %s", refreshToken)
+	refreshTokenParams := database.CreateRefreshTokenParams{
+		Token:  refreshToken,
+		UserID: dbUser.ID,
+	}
+
+	_, err = cfg.db.CreateRefreshToken(r.Context(), refreshTokenParams)
+	if err != nil {
+		log.Println("could not persist refresh token")
+	}
+
 	user := UserResponse{
-		ID:        dbUser.ID,
-		CreatedAt: dbUser.CreatedAt,
-		UpdatedAt: dbUser.UpdatedAt,
-		Email:     dbUser.Email,
-		Token:     token,
+		ID:           dbUser.ID,
+		CreatedAt:    dbUser.CreatedAt,
+		UpdatedAt:    dbUser.UpdatedAt,
+		Email:        dbUser.Email,
+		Token:        token,
+		RefreshToken: refreshToken,
 	}
 
 	log.Printf("User after DB write:")
@@ -240,16 +256,80 @@ func (cfg *apiConfig) handlerUserLogin(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+type RefreshResponse struct {
+	Token string `json:"token"`
+}
+
+func (cfg *apiConfig) handleRefreshToken(w http.ResponseWriter, r *http.Request) {
+	headerToken, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		log.Printf("failed to get valid bearer token")
+	}
+
+	dbRefreshToken, err := cfg.db.GetExistsingRefreshToken(r.Context(), headerToken)
+	if err != nil {
+		w.WriteHeader(401)
+		return
+	}
+	if time.Now().After(dbRefreshToken.ExpiresAt) {
+		w.WriteHeader(401)
+		return
+	}
+	if dbRefreshToken.RevokedAt.Valid {
+		w.WriteHeader(401)
+		return
+	}
+	expiresIn := time.Hour
+	token, err := auth.MakeJWT(dbRefreshToken.UserID, os.Getenv("TOKEN_SECRET"), expiresIn)
+	refreshResponse := RefreshResponse{
+		Token: token,
+	}
+	w.WriteHeader(200)
+	if err := json.NewEncoder(w).Encode(refreshResponse); err != nil {
+		log.Printf("failed to encode refresh token response")
+		w.WriteHeader(500)
+		return
+	}
+}
+
+func (cfg *apiConfig) handleRevokeToken(w http.ResponseWriter, r *http.Request) {
+	headerToken, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		log.Printf("failed to get valid bearer token")
+	}
+
+	dbRefreshToken, err := cfg.db.GetExistsingRefreshToken(r.Context(), headerToken)
+	if err != nil {
+		w.WriteHeader(401)
+		return
+	}
+	if time.Now().After(dbRefreshToken.ExpiresAt) {
+		w.WriteHeader(401)
+		return
+	}
+	if dbRefreshToken.RevokedAt.Valid {
+		w.WriteHeader(401)
+		return
+	}
+	err = cfg.db.RevokeRefreshToken(r.Context(), dbRefreshToken.Token)
+	if err != nil {
+		log.Printf("failed to revoke token")
+		w.WriteHeader(500)
+	}
+	w.WriteHeader(204)
+}
+
 type CreateUserHandler struct {
 	queries *database.Queries
 }
 
 type UserResponse struct {
-	ID        uuid.UUID `json:"id"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
-	Email     string    `json:"email"`
-	Token     string    `json:"token"`
+	ID           uuid.UUID `json:"id"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
+	Email        string    `json:"email"`
+	Token        string    `json:"token"`
+	RefreshToken string    `json:"refresh_token"`
 }
 
 func (cfg *apiConfig) handlerUserCreate(w http.ResponseWriter, r *http.Request) {
@@ -383,6 +463,8 @@ func main() {
 	mux.HandleFunc("POST /api/validate_chirp", handlerChirpsValidate)
 	mux.HandleFunc("POST /api/users", apiCfg.handlerUserCreate)
 	mux.HandleFunc("POST /api/login", apiCfg.handlerUserLogin)
+	mux.HandleFunc("POST /api/refresh", apiCfg.handleRefreshToken)
+	mux.HandleFunc("POST /api/revoke", apiCfg.handleRevokeToken)
 	mux.HandleFunc("GET /api/chirps", apiCfg.handlerGetChirps)
 	mux.HandleFunc("GET /api/chirps/{chirpID}", apiCfg.handlerGetChirp)
 	mux.HandleFunc("POST /api/chirps", apiCfg.handlerChirpCreate)
