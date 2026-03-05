@@ -353,7 +353,6 @@ func (cfg *apiConfig) handlerUserCreate(w http.ResponseWriter, r *http.Request) 
 	}
 
 	// userHanlder, err := h.queries.CreateUser(r.Context(), params.Email)
-	log.Printf("Getting user")
 	log.Printf("Getting user - email: %v", params.Email)
 	hashedPassword, err := auth.HashPassword(params.Password)
 	if err != nil {
@@ -381,6 +380,75 @@ func (cfg *apiConfig) handlerUserCreate(w http.ResponseWriter, r *http.Request) 
 	log.Printf("User after DB write:")
 	fmt.Printf("%+v\n", user)
 	w.WriteHeader(http.StatusCreated)
+	log.Printf("Writing content type...")
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(user); err != nil {
+		log.Panicf("Error encoding parameters: %s", err)
+		w.WriteHeader(500)
+		return
+	}
+}
+
+func (cfg *apiConfig) handlerUserUpdate(w http.ResponseWriter, r *http.Request) {
+	log.Printf("Handling PUT api/users")
+	type parameters struct {
+		Email    string `json:"email"`
+		Password string `json:"password"`
+	}
+	token, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		log.Printf("invalid request - no token")
+		w.WriteHeader(401)
+		return
+	}
+	id, err := auth.ValidateJWT(token, os.Getenv("TOKEN_SECRET"))
+	if err != nil {
+		log.Printf("Invalid token")
+		w.WriteHeader(401)
+		return
+	}
+
+	log.Printf("preparing to decode json...\n")
+	decoder := json.NewDecoder(r.Body)
+	log.Printf("created decoder\n")
+	params := parameters{}
+	log.Printf("decoding json...\n")
+	err = decoder.Decode(&params)
+
+	if err != nil {
+		log.Printf("Error decoding parameters: %s", err)
+		w.WriteHeader(500)
+		return
+	}
+
+	// userHanlder, err := h.queries.CreateUser(r.Context(), params.Email)
+	log.Printf("Getting user - email: %v", params.Email)
+	hashedPassword, err := auth.HashPassword(params.Password)
+	if err != nil {
+		log.Printf("error hashing password")
+	}
+
+	userParams := database.UpdateUserParams{
+		Email:          params.Email,
+		HashedPassword: hashedPassword,
+		ID:             id,
+	}
+	dbUser, err := cfg.db.UpdateUser(r.Context(), userParams)
+
+	if err != nil {
+		log.Printf("error while updating user in db: %s", err)
+	}
+	log.Printf("local user struct")
+	user := UserResponse{
+		ID:        dbUser.ID,
+		CreatedAt: dbUser.CreatedAt,
+		UpdatedAt: dbUser.UpdatedAt,
+		Email:     dbUser.Email,
+	}
+
+	log.Printf("User after DB write:")
+	fmt.Printf("%+v\n", user)
+	w.WriteHeader(http.StatusOK)
 	log.Printf("Writing content type...")
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(user); err != nil {
@@ -462,6 +530,7 @@ func main() {
 
 	mux.HandleFunc("POST /api/validate_chirp", handlerChirpsValidate)
 	mux.HandleFunc("POST /api/users", apiCfg.handlerUserCreate)
+	mux.HandleFunc("PUT /api/users", apiCfg.handlerUserUpdate)
 	mux.HandleFunc("POST /api/login", apiCfg.handlerUserLogin)
 	mux.HandleFunc("POST /api/refresh", apiCfg.handleRefreshToken)
 	mux.HandleFunc("POST /api/revoke", apiCfg.handleRevokeToken)
